@@ -36,7 +36,13 @@ async Task OnMessage(Message msg, UpdateType type)
         var byteArray = Encoding.UTF8.GetBytes($"{togglToken}:api_token");
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Basic", Convert.ToBase64String(byteArray));
-        var isNight = DateTime.Now.Hour < 7;
+        
+        var offset = TimeSpan.FromHours(7);
+        var nowInOffset = DateTimeOffset.UtcNow.ToOffset(offset);
+        var dateInOffset = nowInOffset.Date;
+        var today = new DateTimeOffset(dateInOffset, offset);
+        
+        var isNight = nowInOffset.Hour < 7;
 
         var request = validate switch
         {
@@ -51,29 +57,23 @@ async Task OnMessage(Message msg, UpdateType type)
         using var responseStream = await client.PostAsync(url, content);
         var responseString = await responseStream.Content.ReadAsStringAsync();
         var response = JsonSerializer.Deserialize<ToggleResponseDto[]>(responseString);
-        var offset = response?.FirstOrDefault()?.TimeEntries.FirstOrDefault()?.Start.Offset;
-        if (offset is null)
-        {
-            await bot.SendMessage(msg.Chat, "Sorry, there is no response..... ");
-            return;
-        }
-        var today = new DateTimeOffset(DateTime.Today, offset.Value);
 
         var startingFilter = validate switch
         {
             { dateTimeParams: not null } => validate.dateTimeParams.Start,
             { timeParams: not null } => isNight && validate.timeParams.Start.Hours > 7
                 ? today.AddDays(-1).AddTicks(validate.timeParams.Start.Ticks)
-                :today.AddTicks(validate.timeParams.Start.Ticks),
-            { taskType: not null } => isNight 
-                ? today.AddDays(-1).AddHours(7) 
+                : today.AddTicks(validate.timeParams.Start.Ticks),
+            { taskType: not null } => isNight
+                ? today.AddDays(-1).AddHours(7)
                 : today.AddHours(7),
             _ => throw new Exception("Unknown response type")
         };
+        
         var filteredResponse = response?
             .Where(r => r.Description == taskType)
             .SelectMany(x => x.TimeEntries)
-            .Where(r => r.Start.ToUniversalTime() > startingFilter.ToUniversalTime())
+            .Where(r => r.Start > startingFilter)
             .Select(r => r.Stop - r.Start)
             .ToArray();
 
@@ -86,8 +86,9 @@ async Task OnMessage(Message msg, UpdateType type)
         var total = TimeSpan.FromTicks(filteredResponse.Sum(ts => ts.Ticks));
         await bot.SendMessage(msg.Chat, $"Total time is: {total:g}");
     }
-    catch
+    catch (Exception ex)
     {
+        Console.WriteLine(ex);
         await bot.SendMessage(msg.Chat, "There was some error..... ");
     }
 }
@@ -148,8 +149,8 @@ ToggleRequestDto GetTaskTypeRequest(string taskType, bool isNight)
 {
     return new ToggleRequestDto
     {
-        StartDate = isNight 
-            ? DateTime.Today.AddDays(-1).ToString("yyyy-MM-dd") 
+        StartDate = isNight
+            ? DateTime.Today.AddDays(-1).ToString("yyyy-MM-dd")
             : DateTime.Today.ToString("yyyy-MM-dd"),
         EndDate = DateTime.Today.ToString("yyyy-MM-dd"),
         Description = taskType
